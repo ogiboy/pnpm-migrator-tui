@@ -28,6 +28,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/<username>/pnpm-migrator-tui.git"
+    "url": "https://github.com/ogiboy/pnpm-migrator-tui.git"
   }
 }
