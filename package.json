@@ -26,5 +26,9 @@
     "execa": "^9.6.1",
     "inquirer": "^13.3.2",
     "ora": "^9.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/<username>/pnpm-migrator-tui.git"
   }
 }
