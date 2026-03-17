@@ -1,0 +1,30 @@
+{
+  "name": "pnpm-migrator-tui",
+  "version": "1.0.0",
+  "description": "TUI tool to migrate multiple Node.js projects to PNPM safely, with parallel jobs and progress tracking.",
+  "main": "index.js",
+  "bin": {
+    "pnpm-migrate": "./pnpm-migration-tui.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "pnpm",
+    "migration",
+    "cli",
+    "tui",
+    "nodejs",
+    "tool"
+  ],
+  "author": "Oguzcan Toptas",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "cli-progress": "^3.12.0",
+    "execa": "^9.6.1",
+    "inquirer": "^13.3.2",
+    "ora": "^9.3.0"
+  }
+}
