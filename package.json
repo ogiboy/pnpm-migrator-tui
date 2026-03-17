@@ -2,7 +2,6 @@
   "name": "pnpm-migrator-tui",
   "version": "1.0.0",
   "description": "TUI tool to migrate multiple Node.js projects to PNPM safely, with parallel jobs and progress tracking.",
-  "main": "index.js",
   "bin": {
     "pnpm-migrate": "./pnpm-migration-tui.js"
   },
