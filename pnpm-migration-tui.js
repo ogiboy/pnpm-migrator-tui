@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * PNPM Migration TUI Tool v2
- * Requires: npm i inquirer execa ora chalk cli-progress
+ * PNPM Migration TUI Tool v6
+ * Requires: npm i inquirer execa ora chalk cli-progress fuzzy
  */
 
 import inquirer from 'inquirer';
@@ -12,11 +12,49 @@ import chalk from 'chalk';
 import fs from 'node:fs';
 import path from 'node:path';
 import cliProgress from 'cli-progress';
+import fuzzy from 'fuzzy';
+import os from 'node:os';
 
-// Recursive project finder
+// --- Cache & Backup Paths ---
+const CACHE_FILE = path.join(os.homedir(), '.pnpm-migration-cache.json');
+const BACKUP_ROOT = path.join(os.homedir(), 'pnpm-migration-backups');
+
+// --- Helper: sleep ---
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// --- Cache load/save ---
+function loadCache() {
+  if (!fs.existsSync(CACHE_FILE)) return { roots: [] };
+  try {
+    return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
+  } catch {
+    return { roots: [] };
+  }
+}
+function saveCache(data) {
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2), 'utf-8');
+}
+
+// --- Fuzzy prompt ---
+async function fuzzyPrompt(message, choices) {
+  const answer = await inquirer.prompt([
+    {
+      type: 'autocomplete',
+      name: 'selection',
+      message,
+      source: (_answersSoFar, input = '') => {
+        return Promise.resolve(
+          fuzzy.filter(input, choices).map((el) => el.original),
+        );
+      },
+    },
+  ]);
+  return answer.selection;
+}
+
+// --- Recursive project finder ---
 async function findProjects(root) {
   const results = new Set();
-
   async function walk(dir) {
     const files = await fs.promises.readdir(dir, { withFileTypes: true });
     for (const file of files) {
@@ -25,26 +63,44 @@ async function findProjects(root) {
         if (file.name.startsWith('.') || file.name === 'node_modules') continue;
         await walk(full);
       }
-      if (file.name === 'package.json') {
-        results.add(dir);
-      }
+      if (file.name === 'package.json') results.add(dir);
     }
   }
-
   await walk(root);
   return Array.from(results);
 }
 
-// Process a single project safely (cwd param)
+// --- Backup a project ---
+function backupProject(dir) {
+  const timestamp = new Date().toISOString().replaceAll(/[:.]/g, '-');
+  const projectName = path.basename(dir);
+  const backupDir = path.join(BACKUP_ROOT, `${timestamp}_${projectName}`);
+  fs.mkdirSync(backupDir, { recursive: true });
+
+  ['package.json', 'package-lock.json'].forEach((file) => {
+    const src = path.join(dir, file);
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, path.join(backupDir, file));
+    }
+  });
+
+  return backupDir;
+}
+
+// --- Process a single project ---
 async function processProject(dir, options) {
   const spinner = ora(`Processing ${dir}`).start();
+  let backupDir = null;
   try {
     if (options.dryRun) {
       spinner.info(`[DRY RUN] Would process: ${dir}`);
       return { ok: true };
     }
 
-    // Clean node_modules
+    if (options.backup) {
+      backupDir = backupProject(dir);
+    }
+
     if (options.cleanNodeModules) {
       await execa(
         'bash',
@@ -57,10 +113,21 @@ async function processProject(dir, options) {
       await execa('pnpm', ['import'], { cwd: dir });
     }
 
-    await execa('pnpm', ['install', '--frozen-lockfile=false'], {
-      cwd: dir,
-      stdio: 'ignore',
-    });
+    // Retry logic
+    let attempt = 0;
+    const maxAttempts = 2;
+    while (attempt < maxAttempts) {
+      try {
+        await execa('pnpm', ['install', '--frozen-lockfile=false'], {
+          cwd: dir,
+          stdio: 'ignore',
+        });
+        break;
+      } catch (err) {
+        attempt++;
+        if (attempt >= maxAttempts) throw err;
+      }
+    }
 
     if (options.approveBuilds) {
       await execa('pnpm', ['approve-builds', '--all'], { cwd: dir });
@@ -70,20 +137,20 @@ async function processProject(dir, options) {
       fs.unlinkSync(path.join(dir, 'package-lock.json'));
     }
 
-    spinner.succeed(`Done: ${dir}`);
-    return { ok: true };
+    const backupMsg = backupDir ? ' (backup: ' + backupDir + ')' : '';
+    spinner.succeed('Done: ' + dir + backupMsg);
+
+    return { ok: true, backup: backupDir };
   } catch (err) {
     spinner.fail(`Failed: ${dir}`);
-    return { ok: false, error: err.message };
+    return { ok: false, error: err.message, backup: backupDir };
   }
 }
 
-// Run queue with parallel workers
+// --- Run queue with progress ---
 async function runQueue(projects, options) {
   const results = [];
   let index = 0;
-
-  // Progress bar
   const progress = new cliProgress.SingleBar({
     format:
       'Progress |' +
@@ -93,7 +160,6 @@ async function runQueue(projects, options) {
     barIncompleteChar: '\u2591',
     hideCursor: true,
   });
-
   progress.start(projects.length, 0);
 
   async function worker() {
@@ -112,33 +178,33 @@ async function runQueue(projects, options) {
   return results;
 }
 
-// --- CLI logic ---
+// --- CLI Logic ---
 console.clear();
-console.log(chalk.cyan('\n🚀 PNPM Migration TUI\n'));
+console.log(chalk.cyan('\n🚀 PNPM Migration TUI v6\n'));
+
+// Load previous roots
+const cache = loadCache();
+const popularRoots = [
+  path.join(os.homedir(), 'Documents/Projects'),
+  path.join(os.homedir(), 'Documents/BACodesandbox'),
+];
+const rootChoices = [
+  ...cache.roots,
+  ...popularRoots.filter((r) => !cache.roots.includes(r)),
+];
+
+// Root folder selection
+const root = await fuzzyPrompt('Select root directory:', rootChoices);
+cache.roots = [root, ...cache.roots.filter((r) => r !== root)].slice(0, 10);
+saveCache(cache);
 
 const answers = await inquirer.prompt([
-  {
-    type: 'input',
-    name: 'root',
-    message: 'Root directory:',
-    default: process.cwd(),
-  },
-  {
-    type: 'confirm',
-    name: 'dryRun',
-    message: 'Dry run?',
-    default: true,
-  },
-  {
-    type: 'number',
-    name: 'jobs',
-    message: 'Parallel jobs:',
-    default: 4,
-  },
+  { type: 'confirm', name: 'dryRun', message: 'Dry run?', default: true },
+  { type: 'number', name: 'jobs', message: 'Parallel jobs:', default: 4 },
   {
     type: 'confirm',
     name: 'cleanNodeModules',
-    message: 'Delete ALL node_modules (recommended for messy folders)?',
+    message: 'Delete ALL node_modules?',
     default: true,
   },
   {
@@ -147,19 +213,44 @@ const answers = await inquirer.prompt([
     message: 'Auto approve pnpm builds?',
     default: true,
   },
+  {
+    type: 'confirm',
+    name: 'backup',
+    message: 'Backup package files before migration?',
+    default: true,
+  },
 ]);
 
 console.log(chalk.gray('\n🔍 Scanning projects...\n'));
-const projects = await findProjects(answers.root);
+let projects = await findProjects(root);
 console.log(chalk.green(`Found ${projects.length} projects\n`));
 
+// Optional: show fuzzy list to select which projects to migrate
+if (projects.length > 20) {
+  const confirmList = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'showList',
+      message: 'Show projects to select?',
+      default: false,
+    },
+  ]);
+  if (confirmList.showList) {
+    const selected = await inquirer.prompt([
+      {
+        type: 'checkbox',
+        name: 'chosenProjects',
+        message: 'Select projects to migrate:',
+        choices: projects,
+        pageSize: 15,
+      },
+    ]);
+    projects = selected.chosenProjects;
+  }
+}
+
 const confirm = await inquirer.prompt([
-  {
-    type: 'confirm',
-    name: 'go',
-    message: 'Start migration?',
-    default: true,
-  },
+  { type: 'confirm', name: 'go', message: 'Start migration?', default: true },
 ]);
 
 if (!confirm.go) {
@@ -176,7 +267,10 @@ console.log(chalk.red(`❌ Failed: ${failed.length}`));
 
 if (failed.length) {
   console.log('\nFailed projects:');
-  failed.forEach((f) => console.log('-', f.dir));
+  failed.forEach((f) =>
+    console.log('-', f.dir, f.backup ? `(backup: ${f.backup})` : ''),
+  );
 }
 
-console.log('\n🎉 Done!\n');
+console.log(`\nBackups stored in: ${BACKUP_ROOT}`);
+console.log('\n🎉 Migration complete!\n');
