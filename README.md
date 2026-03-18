@@ -56,7 +56,7 @@ pnpm-migrate
 ### Option 2: Global install (if published)
 
 ```bash
-npm install -g <package-name>
+npm install -g pnpm-migrator-tui
 ```
 
 ## CLI Options
