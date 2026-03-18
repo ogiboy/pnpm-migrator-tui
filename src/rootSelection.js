@@ -7,18 +7,15 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 import inquirer from 'inquirer';
-import { execa } from 'execa';
+import { search } from '@inquirer/prompts';
 import fuzzy from 'fuzzy';
 
 import { normalizePath, pathExists } from './utils.js';
 
 const CACHE_FILE = path.join(os.homedir(), '.pnpm-migration-cache.json');
-const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const OPTIONAL_PREFIX = path.join(os.tmpdir(), 'pnpm-migrate-optional-deps');
 const require = createRequire(import.meta.url);
 
 function loadRootCache() {
@@ -56,49 +53,6 @@ async function resolveAutocompletePrompt(logger) {
     return mod.default || mod;
   } catch {
     logger.debug('Autocomplete prompt not found in current install.');
-  }
-
-  logger.debug('Trying to auto-install inquirer-autocomplete-prompt...');
-
-  try {
-    await fs.promises.mkdir(OPTIONAL_PREFIX, { recursive: true });
-    const optionalPkgJson = path.join(OPTIONAL_PREFIX, 'package.json');
-    if (!fs.existsSync(optionalPkgJson)) {
-      await fs.promises.writeFile(
-        optionalPkgJson,
-        JSON.stringify({ name: 'pnpm-migrate-optional-deps', private: true }, null, 2),
-        'utf8',
-      );
-    }
-
-    const npmCacheDir = path.join(OPTIONAL_PREFIX, '.npm-cache');
-    await fs.promises.mkdir(npmCacheDir, { recursive: true });
-
-    await execa(
-      'npm',
-      [
-        'install',
-        '--prefix',
-        OPTIONAL_PREFIX,
-        '--no-save',
-        '--no-audit',
-        '--no-fund',
-        '--legacy-peer-deps',
-        '--cache',
-        npmCacheDir,
-        'inquirer-autocomplete-prompt@latest',
-      ],
-      { cwd: TOOL_ROOT, stdio: 'ignore' },
-    );
-
-    const resolvedAfterInstall = require.resolve('inquirer-autocomplete-prompt', {
-      paths: [OPTIONAL_PREFIX, TOOL_ROOT],
-    });
-    const mod = await import(resolvedAfterInstall);
-    logger.debug('Autocomplete prompt installed successfully.');
-    return mod.default || mod;
-  } catch {
-    logger.debug('Autocomplete plugin install failed. Falling back to input prompt.');
     return null;
   }
 }
@@ -115,6 +69,16 @@ async function promptWithAutocomplete(choices) {
   ]);
 
   return answer.root;
+}
+
+async function promptWithSearch(choices) {
+  return search({
+    message: 'Select root directory:',
+    source: async (term) =>
+      fuzzy
+        .filter(term || '', choices)
+        .map((entry) => ({ name: entry.original, value: entry.original })),
+  });
 }
 
 async function promptWithInput(defaultRoot) {
@@ -168,7 +132,15 @@ export async function selectRootDirectory(logger, cliRoot) {
       inquirer.registerPrompt('autocomplete', autocompletePrompt);
       selectedRoot = await promptWithAutocomplete(existingCandidates);
     } catch {
-      logger.warn('Autocomplete prompt could not start. Using standard path input.');
+      logger.warn('Legacy autocomplete prompt could not start.');
+    }
+  }
+
+  if (!selectedRoot && existingCandidates.length > 0) {
+    try {
+      selectedRoot = await promptWithSearch(existingCandidates);
+    } catch {
+      logger.warn('Search prompt could not start. Using standard path input.');
     }
   }
 
