@@ -53,7 +53,7 @@ Then run:
 pnpm-migrate
 ```
 
-### Option 2: Global install (if published)
+### Option 2: Global install
 
 ```bash
 npm install -g pnpm-migrator-tui
