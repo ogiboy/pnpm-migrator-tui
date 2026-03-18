@@ -14,7 +14,7 @@ import inquirer from 'inquirer';
 import { execa } from 'execa';
 import fuzzy from 'fuzzy';
 
-import { formatError, normalizePath, pathExists } from './utils.js';
+import { normalizePath, pathExists } from './utils.js';
 
 const CACHE_FILE = path.join(os.homedir(), '.pnpm-migration-cache.json');
 const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -55,10 +55,10 @@ async function resolveAutocompletePrompt(logger) {
     const mod = await import(localResolved);
     return mod.default || mod;
   } catch {
-    logger.warn('Optional dependency "inquirer-autocomplete-prompt" is missing.');
+    logger.debug('Autocomplete prompt not found in current install.');
   }
 
-  logger.step('Trying to auto-install inquirer-autocomplete-prompt...');
+  logger.debug('Trying to auto-install inquirer-autocomplete-prompt...');
 
   try {
     await fs.promises.mkdir(OPTIONAL_PREFIX, { recursive: true });
@@ -95,12 +95,10 @@ async function resolveAutocompletePrompt(logger) {
       paths: [OPTIONAL_PREFIX, TOOL_ROOT],
     });
     const mod = await import(resolvedAfterInstall);
-    logger.success('Autocomplete prompt installed successfully.');
+    logger.debug('Autocomplete prompt installed successfully.');
     return mod.default || mod;
-  } catch (error) {
-    logger.warn(
-      `Autocomplete plugin install failed, using input fallback. (${formatError(error)})`,
-    );
+  } catch {
+    logger.debug('Autocomplete plugin install failed. Falling back to input prompt.');
     return null;
   }
 }
@@ -169,14 +167,13 @@ export async function selectRootDirectory(logger, cliRoot) {
     try {
       inquirer.registerPrompt('autocomplete', autocompletePrompt);
       selectedRoot = await promptWithAutocomplete(existingCandidates);
-    } catch (error) {
-      logger.warn(
-        `Autocomplete prompt registration failed, using input fallback. (${formatError(error)})`,
-      );
+    } catch {
+      logger.warn('Autocomplete prompt could not start. Using standard path input.');
     }
   }
 
   if (!selectedRoot) {
+    logger.step('Fuzzy root picker unavailable. Using standard path input.');
     if (existingCandidates.length === 0) {
       logger.warn('No cached roots found. Falling back to manual root input.');
     }

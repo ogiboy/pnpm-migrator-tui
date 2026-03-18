@@ -42,6 +42,9 @@ export function createLogger() {
       write('step', message);
       console.log(chalk.gray(message));
     },
+    debug(message) {
+      write('debug', message);
+    },
     plain(message) {
       write('plain', message);
       console.log(message);
@@ -54,9 +57,17 @@ export function createLogger() {
 }
 
 export function createProgressTracker(total) {
+  const counters = {
+    success: 0,
+    failed: 0,
+    skipped: 0,
+  };
+
   const bar = new cliProgress.SingleBar(
     {
-      format: `Progress |${chalk.cyan('{bar}')}| {percentage}% || {value}/{total} projects`,
+      format:
+        `Progress |${chalk.cyan('{bar}')}| {percentage}% || {value}/{total} projects` +
+        ` || ok:{ok} fail:{fail} skip:{skip}`,
       barCompleteChar: '\u2588',
       barIncompleteChar: '\u2591',
       hideCursor: true,
@@ -66,11 +77,24 @@ export function createProgressTracker(total) {
     cliProgress.Presets.shades_classic,
   );
 
-  bar.start(total, 0);
+  bar.start(total, 0, { ok: 0, fail: 0, skip: 0 });
+
+  const toPayload = () => ({
+    ok: counters.success,
+    fail: counters.failed,
+    skip: counters.skipped,
+  });
 
   return {
-    increment() {
-      bar.increment();
+    increment(status) {
+      if (status === 'success') {
+        counters.success += 1;
+      } else if (status === 'failed') {
+        counters.failed += 1;
+      } else if (status === 'skipped') {
+        counters.skipped += 1;
+      }
+      bar.increment(1, toPayload());
     },
     stop() {
       bar.stop();
@@ -103,20 +127,20 @@ export function printSummary(logger, results) {
   const skipped = results.filter((r) => r.status === 'skipped');
 
   logger.section('Migration Summary');
-  logger.success(`Success: ${success.length}`);
-  logger.warn(`Skipped: ${skipped.length}`);
+  logger.plain(`Success: ${success.length}`);
+  logger.plain(`Failed: ${failed.length}`);
+  logger.plain(`Skipped: ${skipped.length}`);
 
   if (failed.length > 0) {
-    logger.error(`Failed: ${failed.length}`);
+    logger.error('\nFailed projects:');
     for (const entry of failed) {
-      logger.error(`- ${entry.project}: ${entry.error}`);
+      logger.error(`- ${entry.project}`);
+      logger.error(`  Reason: ${entry.error}`);
     }
-  } else {
-    logger.success('Failed: 0');
   }
 
   if (success.length > 0) {
-    logger.plain('\nCompleted projects:');
+    logger.success('\nCompleted projects:');
     for (const entry of success) {
       logger.plain(`- ${entry.project}`);
     }

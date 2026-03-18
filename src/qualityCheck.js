@@ -132,7 +132,7 @@ export function runSelfQualityCheck(context, logger) {
   ];
 
   if (findings.length === 0) {
-    logger.success('Self-quality check passed.');
+    logger.debug('Self-quality check passed.');
     return { ok: true, findings: [] };
   }
 

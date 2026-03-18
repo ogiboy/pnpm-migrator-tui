@@ -12,7 +12,6 @@ import { execa } from 'execa';
 
 import {
   ensureDir,
-  formatError,
   getBackupRoot,
   isSubPath,
   normalizePath,
@@ -40,8 +39,9 @@ async function backupProjectFiles(projectDir) {
   return backupDir;
 }
 
-async function findNodeModulesDirs(projectDir, logger) {
+async function findNodeModulesTargets(projectDir) {
   const toDelete = [];
+  const warnings = [];
   const queue = [projectDir];
 
   while (queue.length > 0) {
@@ -50,18 +50,18 @@ async function findNodeModulesDirs(projectDir, logger) {
     try {
       entries = await fs.promises.readdir(current, { withFileTypes: true });
     } catch (error) {
-      logger.warn(`Unable to scan ${current} for node_modules cleanup: ${formatError(error)}`);
+      warnings.push(`Unable to scan ${current} for node_modules cleanup.`);
       continue;
     }
 
     for (const entry of entries) {
-      if (!entry.isDirectory()) {
-        continue;
-      }
-
       const fullPath = path.join(current, entry.name);
       if (entry.name.startsWith('node_modules')) {
         toDelete.push(fullPath);
+        continue;
+      }
+
+      if (!entry.isDirectory()) {
         continue;
       }
 
@@ -73,30 +73,83 @@ async function findNodeModulesDirs(projectDir, logger) {
     }
   }
 
-  return toDelete;
+  return { toDelete, warnings };
 }
 
 async function deleteNodeModulesDirs(projectDir, root, options) {
-  const { logger, dryRun } = options;
-  const dirs = await findNodeModulesDirs(projectDir, logger);
+  const { dryRun } = options;
+  const { toDelete, warnings } = await findNodeModulesTargets(projectDir);
   const deletions = [];
 
-  for (const dir of dirs) {
+  for (const dir of toDelete) {
     const deletion = await safeDeletePath(dir, {
       allowedRoot: root,
       dryRun,
-      logger,
+      logger: null,
     });
     deletions.push({ path: dir, ...deletion });
   }
 
-  return deletions;
+  return { deletions, warnings };
 }
 
-async function runPnpmInstallWithRetry(projectDir, logger) {
+function getFirstMeaningfulLine(text) {
+  if (!text) {
+    return '';
+  }
+
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines[0] || '';
+}
+
+function summarizeError(error) {
+  const stderr = typeof error?.stderr === 'string' ? error.stderr : '';
+  const shortMessage =
+    typeof error?.shortMessage === 'string' ? error.shortMessage : '';
+  const message = typeof error?.message === 'string' ? error.message : 'Unknown error';
+  const combined = `${stderr}\n${shortMessage}\n${message}`;
+
+  if (combined.includes('ENOTDIR')) {
+    return 'Path conflict (ENOTDIR): a folder was expected but a file exists in the path.';
+  }
+
+  if (combined.includes('EACCES') || combined.includes('EPERM')) {
+    return 'Permission error: check read/write permissions for this project directory.';
+  }
+
+  if (combined.includes('ERR_PNPM_')) {
+    return getFirstMeaningfulLine(stderr) || getFirstMeaningfulLine(shortMessage) || message;
+  }
+
+  return getFirstMeaningfulLine(shortMessage) || getFirstMeaningfulLine(stderr) || message;
+}
+
+function captureErrorDetails(error) {
+  const parts = [];
+  if (typeof error?.shortMessage === 'string' && error.shortMessage.trim()) {
+    parts.push(error.shortMessage.trim());
+  }
+  if (typeof error?.stderr === 'string' && error.stderr.trim()) {
+    parts.push(error.stderr.trim());
+  }
+  if (typeof error?.stdout === 'string' && error.stdout.trim()) {
+    parts.push(error.stdout.trim());
+  }
+  if (parts.length === 0 && typeof error?.message === 'string') {
+    parts.push(error.message);
+  }
+  return parts.join('\n\n');
+}
+
+async function runPnpmInstallWithRetry(projectDir) {
+  let attempts = 0;
+
   await withRetries(
-    async (attempt) => {
-      logger.step(`pnpm install attempt ${attempt + 1} in ${projectDir}`);
+    async () => {
+      attempts += 1;
       await execa('pnpm', ['install', '--frozen-lockfile=false'], {
         cwd: projectDir,
         stdio: 'pipe',
@@ -105,13 +158,11 @@ async function runPnpmInstallWithRetry(projectDir, logger) {
     {
       retries: 2,
       label: `pnpm install (${projectDir})`,
-      onRetry: ({ attempt, maxRetries, error }) => {
-        logger.warn(
-          `Install failed for ${projectDir}; retry ${attempt}/${maxRetries}. (${formatError(error)})`,
-        );
-      },
+      onRetry: () => {},
     },
   );
+
+  return attempts;
 }
 
 export async function migrateProject(projectDir, options) {
@@ -132,7 +183,10 @@ export async function migrateProject(projectDir, options) {
     error: null,
     backupDir: null,
     deletions: [],
+    warnings: [],
     steps: [],
+    installAttempts: 0,
+    errorDetails: null,
   };
 
   if (!isSubPath(root, normalizedProject)) {
@@ -147,7 +201,7 @@ export async function migrateProject(projectDir, options) {
     if (dryRun) {
       result.status = 'skipped';
       result.steps.push('dry-run');
-      logger.step(`DRY RUN: Would migrate ${normalizedProject}`);
+      logger.debug(`DRY RUN: Would migrate ${normalizedProject}`);
       return result;
     }
 
@@ -157,24 +211,23 @@ export async function migrateProject(projectDir, options) {
     }
 
     if (deleteNodeModules) {
-      result.deletions = await deleteNodeModulesDirs(normalizedProject, root, {
-        logger,
+      const cleanupResult = await deleteNodeModulesDirs(normalizedProject, root, {
         dryRun,
       });
+      result.deletions = cleanupResult.deletions;
+      result.warnings.push(...cleanupResult.warnings);
       result.steps.push('delete-node-modules');
     }
 
     if (fs.existsSync(lockfilePath)) {
-      logger.step(`pnpm import in ${normalizedProject}`);
       await execa('pnpm', ['import'], { cwd: normalizedProject, stdio: 'pipe' });
       result.steps.push('pnpm-import');
     }
 
-    await runPnpmInstallWithRetry(normalizedProject, logger);
+    result.installAttempts = await runPnpmInstallWithRetry(normalizedProject);
     result.steps.push('pnpm-install');
 
     if (autoApproveBuilds) {
-      logger.step(`pnpm approve-builds --all in ${normalizedProject}`);
       await execa('pnpm', ['approve-builds', '--all'], {
         cwd: normalizedProject,
         stdio: 'pipe',
@@ -196,7 +249,8 @@ export async function migrateProject(projectDir, options) {
     return {
       ...result,
       status: 'failed',
-      error: formatError(error),
+      error: summarizeError(error),
+      errorDetails: captureErrorDetails(error),
     };
   }
 }
@@ -217,15 +271,8 @@ export async function runMigrations(projects, options) {
 
       const result = await migrateProject(project, options);
       results.push(result);
-      progress.increment();
-
-      if (result.status === 'failed') {
-        logger.error(`Failed: ${result.project}`);
-      } else if (result.status === 'skipped') {
-        logger.warn(`Skipped (dry run): ${result.project}`);
-      } else {
-        logger.success(`Done: ${result.project}`);
-      }
+      progress.increment(result.status);
+      logger.debug(`[${result.status}] ${result.project}`);
     }
   }
 

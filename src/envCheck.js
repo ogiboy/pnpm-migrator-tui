@@ -157,8 +157,6 @@ export async function runEnvironmentChecks(logger) {
     actions,
   });
 
-  logger.step('Environment validation completed.');
-
   return {
     nodeVersion: versions.nodeVersion,
     pnpmVersion,

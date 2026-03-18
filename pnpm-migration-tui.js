@@ -226,12 +226,17 @@ async function run() {
       return;
     }
 
+    logger.section('Migration Running');
+    logger.step('Processing projects... only progress is shown until completion.');
+
     results = await runMigrations(projects, {
       ...options,
       root,
       logger,
     });
     executedSteps.push('migration');
+
+    logger.success('Migration phase completed.');
 
     const summary = printSummary(logger, results);
     executedSteps.push('summary');
@@ -253,6 +258,13 @@ async function run() {
       options,
       summary,
       executedSteps,
+      failures: results
+        .filter((entry) => entry.status === 'failed')
+        .map((entry) => ({
+          project: entry.project,
+          error: entry.error,
+          errorDetails: entry.errorDetails,
+        })),
     });
     logger.step(`Trace log written to ${tracePath}`);
   } catch (error) {

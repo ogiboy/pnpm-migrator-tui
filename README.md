@@ -43,7 +43,7 @@ It keeps the workflow interactive and user-friendly, while adding guardrails for
 ```bash
 git clone https://github.com/ogiboy/pnpm-migrator-tui.git
 cd pnpm-migrator-tui
-npm install
+pnpm install
 npm link
 ```
 
